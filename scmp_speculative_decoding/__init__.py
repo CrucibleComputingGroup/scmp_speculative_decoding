@@ -19,7 +19,7 @@ from .loader import (
     load_spec_models,
 )
 from .sc_model import SC_CONFIG_DEFAULTS, SCLinear, make_sc_model
-from .spec_decode import SpecDecodeStats, generate
+from .spec_decode import SpecDecodeStats, generate, generate_cached
 
 __all__ = [
     "load_spec_models",
@@ -30,5 +30,6 @@ __all__ = [
     "SCLinear",
     "SC_CONFIG_DEFAULTS",
     "generate",
+    "generate_cached",
     "SpecDecodeStats",
 ]

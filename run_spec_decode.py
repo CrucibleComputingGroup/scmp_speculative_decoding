@@ -21,7 +21,7 @@ import time
 
 import torch
 
-from scmp_speculative_decoding import generate, load_spec_models
+from scmp_speculative_decoding import generate_cached, load_spec_models
 
 TARGET_MODEL = os.environ.get("TARGET_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
 DRAFT_MODEL = os.environ.get("DRAFT_MODEL", "meta-llama/Llama-3.2-1B-Instruct")
@@ -60,7 +60,7 @@ def main() -> None:
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         t0 = time.time()
-        out, stats = generate(
+        out, stats = generate_cached(
             m.target, m.draft, ids,
             max_new_tokens=NEW_TOKENS, gamma=GAMMA,
             do_sample=DO_SAMPLE, temperature=TEMPERATURE,

@@ -45,17 +45,29 @@ SC (see below).
 
 ```python
 import torch
-from scmp_speculative_decoding import load_spec_models, generate
+from scmp_speculative_decoding import load_spec_models, generate_cached
 
 m = load_spec_models()                       # both models SC-enabled
 ids = m.tokenizer.apply_chat_template(
     [{"role": "user", "content": "Explain stochastic computing."}],
     add_generation_prompt=True, return_tensors="pt").to(m.target.device)
 
-out, stats = generate(m.target, m.draft, ids, max_new_tokens=128, gamma=4)
+out, stats = generate_cached(m.target, m.draft, ids, max_new_tokens=128, gamma=4)
 print(m.tokenizer.decode(out[0, ids.shape[1]:], skip_special_tokens=True))
 print(stats)        # acceptance rate, mean accepted/step, ...
 ```
+
+Two decoders are provided, with identical arguments / output:
+
+* **`generate_cached`** (use this for HF models) — KV-cached, **O(T)**. Each
+  step the draft proposes incrementally and the target verifies in one cached
+  forward; on rejection both caches are rolled back (`DynamicCache.crop`) to the
+  accepted prefix. KV storage is orthogonal to SC — the caches hold the
+  (quantized) K/V, only the matmuls run on SC — so this is bit-identical to the
+  cache-free path, just O(T) instead of O(T²).
+* **`generate`** — cache-free reference, **O(T²)** (re-runs the full forward
+  each step). Family-agnostic (any callable returning `.logits`) and used as the
+  correctness oracle in the tests.
 
 SC knobs live on each `model.config` and can be set independently
 (`use_sc_attn`, `use_sc_linear`, `sc_prec`, `sc_stoc_len`, `sc_mode`,
@@ -87,10 +99,10 @@ Standard speculative sampling (Leviathan et al. 2023; Chen et al. 2023): accept
 draft token `x ~ q` with probability `min(1, p(x)/q(x))`; on first rejection
 resample from the normalized residual `(p − q)₊`; if all `gamma` are accepted,
 emit a free bonus token from the target. This is provably equivalent to
-sampling from the target alone, so SC noise affects only speed, not the target
-distribution. The loop is intentionally **KV-cache-free** (it re-runs the full
-forward each step) — the SC matmul simulation dominates runtime anyway, and the
-cache-free path keeps the accept/reject logic obviously correct.
+sampling from the target alone, so SC noise affects only speed (acceptance
+rate), not the target distribution. The acceptance/rejection math is shared by
+both decoders (`_walk_accept`) so the cached and cache-free paths cannot
+diverge — the test-suite asserts they are byte-identical in greedy mode.
 
 ## Tests
 

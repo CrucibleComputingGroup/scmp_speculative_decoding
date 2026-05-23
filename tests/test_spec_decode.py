@@ -17,7 +17,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scmp_speculative_decoding.spec_decode import generate  # noqa: E402
+from scmp_speculative_decoding.spec_decode import generate, generate_cached  # noqa: E402
 
 
 class StubModel:
@@ -33,6 +33,40 @@ class StubModel:
     def __call__(self, input_ids: torch.Tensor):
         logits = self.W[input_ids[0]].unsqueeze(0)  # (1, seq, vocab)
         return type("O", (), {"logits": logits})()
+
+
+class IntCache:
+    """Minimal stand-in for transformers' DynamicCache (length + crop only).
+
+    The stub model's logits depend only on the current token, so the cache
+    contents don't affect outputs — but tracking length and honoring ``crop``
+    exercises generate_cached's rollback / re-ingest bookkeeping exactly as
+    DynamicCache would.
+    """
+
+    def __init__(self):
+        self.n = 0
+
+    def get_seq_length(self) -> int:
+        return self.n
+
+    def crop(self, max_length: int) -> None:
+        self.n = min(self.n, max_length)
+
+    def advance(self, k: int) -> None:
+        self.n += k
+
+
+class CachedStubModel(StubModel):
+    """StubModel speaking the cached forward protocol generate_cached expects."""
+
+    def __call__(self, input_ids, past_key_values=None, use_cache=False,
+                 cache_position=None):
+        logits = self.W[input_ids[0]].unsqueeze(0)
+        if past_key_values is not None:
+            past_key_values.advance(input_ids.shape[1])
+        return type("O", (), {"logits": logits,
+                              "past_key_values": past_key_values})()
 
 
 def _greedy_reference(model, ids: torch.Tensor, n: int) -> torch.Tensor:
@@ -87,6 +121,30 @@ def test_sampling_matches_target_distribution():
     assert tv < 0.05, f"TV distance {tv:.3f} too large; emp={emp}, ref={ref_p}"
 
 
+def test_cached_matches_cachefree_greedy():
+    """The KV-cached path must produce byte-identical output to the cache-free
+    reference (greedy) — this pins all the crop / re-ingest index bookkeeping."""
+    torch.manual_seed(0)
+    V = 17
+    Wt = torch.randn(V, V)
+    Wd = torch.randn(V, V)
+    prompt = torch.tensor([[3, 1, 4]])
+    for gamma in (1, 2, 4, 8):
+        out_free, sf = generate(StubModel(Wt), StubModel(Wd), prompt,
+                                max_new_tokens=25, gamma=gamma, do_sample=False)
+        out_cached, sc = generate_cached(CachedStubModel(Wt), CachedStubModel(Wd),
+                                         prompt, max_new_tokens=25, gamma=gamma,
+                                         do_sample=False, cache_factory=IntCache)
+        assert torch.equal(out_free, out_cached), \
+            f"gamma={gamma}: cached {out_cached} != free {out_free}"
+        assert sf.accepted == sc.accepted and sf.new_tokens == sc.new_tokens
+    # draft==target accepts every proposal in greedy mode.
+    _, st = generate_cached(CachedStubModel(Wt), CachedStubModel(Wt), prompt,
+                            max_new_tokens=25, gamma=4, do_sample=False,
+                            cache_factory=IntCache)
+    assert st.acceptance_rate == 1.0
+
+
 def test_stats_accounting():
     torch.manual_seed(1)
     V = 10
@@ -104,5 +162,6 @@ def test_stats_accounting():
 if __name__ == "__main__":
     test_greedy_matches_plain_target()
     test_sampling_matches_target_distribution()
+    test_cached_matches_cachefree_greedy()
     test_stats_accounting()
     print("all spec-decode tests passed")
