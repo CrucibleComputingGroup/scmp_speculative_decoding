@@ -32,7 +32,7 @@ DO_SAMPLE = os.environ.get("DO_SAMPLE", "0") == "1"
 TEMPERATURE = float(os.environ.get("TEMPERATURE", "1.0"))
 SC_PREC = int(os.environ.get("SC_PREC", "8"))
 STOC_LENS = [int(x) for x in os.environ.get("STOC_LENS", "256,128,64,32").split(",")]
-SC_ATTN_GRANULARITY = os.environ.get("SC_ATTN_GRANULARITY", "per_head")
+SC_ATTN_GRANULARITY = os.environ.get("SC_ATTN_GRANULARITY", "per_row")
 SEED = int(os.environ.get("SEED", "0"))
 
 

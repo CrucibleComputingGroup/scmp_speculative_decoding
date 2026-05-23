@@ -21,10 +21,21 @@ draft in fp16 and only the target in SC, or vice-versa.
 from __future__ import annotations
 
 import importlib
+import os
 from typing import Any, Iterable, Optional
 
 import torch
 from torch import nn
+
+# Repo-wide kernel defaults: bit-reversed Owen scramble mask + scrambling on the
+# rescale path (e.g. when halve / short stoc_len rescales onto a coarser grid).
+# scmp_kernels reads these from the environment at launch; setdefault so an
+# explicit env var still wins. Per-row granularity for *everything* (attention
+# included) is set via SC_CONFIG_DEFAULTS below. NOTE: these defaults are
+# scoped to this repo — they intentionally do NOT change scmp_kernels' own
+# defaults (which scmp_llm's benchmarks rely on).
+os.environ.setdefault("SC_OWEN_MODE", "bitrev")
+os.environ.setdefault("SC_SCRAMBLE_RESCALE", "1")
 
 try:
     from scmp_kernels import sc_matmul as _sc_matmul
@@ -34,17 +45,22 @@ except ImportError:  # pragma: no cover - exercised only without the kernels
     _HAS_SC = False
 
 
-# Defaults mirror scmp_llm_llama so quality numbers are comparable across repos.
+# Per-row everywhere: both the attention score/context matmuls and the
+# nn.Linear path use per_row granularity (scmp_llm_llama defaults attention to
+# per_head; here we make everything per_row per the repo convention).
 SC_CONFIG_DEFAULTS = {
     "use_sc_attn": True,
     "use_sc_linear": True,
     "sc_prec": 8,
     "sc_stoc_len": 256,
     "sc_mode": "bipolar",
-    "sc_granularity": "per_head",        # attention score / context matmuls
+    "sc_granularity": "per_row",         # attention score / context matmuls
     "sc_linear_granularity": "per_row",  # nn.Linear path
     "sc_linear_chunk_d": 128,
-    "sc_halve_bipolar": False,
+    "sc_halve_bipolar": True,            # uSystolic cycle-halving (2^(sc_prec-1)
+                                         # cycles); the rescale path it triggers
+                                         # is scrambled by default (SC_SCRAMBLE_
+                                         # RESCALE=1), keeping quality (x1.056).
 }
 
 
