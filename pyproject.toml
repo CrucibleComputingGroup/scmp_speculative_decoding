@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scmp_speculative_decoding"
+version = "0.1.0"
+description = "SC-simulated speculative decoding: draft + target LLM with every matmul run through stochastic-computing kernels."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "torch",
+    "transformers",
+    "accelerate",
+]
+
+[project.optional-dependencies]
+# scmp_kernels provides sc_matmul. Install editable from the sibling repo:
+#   pip install -e ../scmp_kernels
+sc = ["scmp_kernels"]
+
+[tool.setuptools.packages.find]
+include = ["scmp_speculative_decoding*"]
