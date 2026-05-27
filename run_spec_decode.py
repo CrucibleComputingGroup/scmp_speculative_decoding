@@ -44,8 +44,21 @@ def _set_sc(model, *, enabled, stoc_len):
     model.config.sc_granularity = SC_ATTN_GRANULARITY
 
 
+def _max_memory(gpu_gib: str | None):
+    # Single-GPU headroom control: cap on-device memory so the SC kernels have
+    # scratch room (rest offloads to CPU). None -> plain auto-dispatch.
+    if not gpu_gib:
+        return None
+    cpu_gib = os.environ.get("OFFLOAD_CPU_GIB", "400")
+    return {0: f"{gpu_gib}GiB", "cpu": f"{cpu_gib}GiB"}
+
+
 def main() -> None:
-    m = load_spec_models(TARGET_MODEL, DRAFT_MODEL, dtype=torch.float16)
+    m = load_spec_models(
+        TARGET_MODEL, DRAFT_MODEL, dtype=torch.float16,
+        target_max_memory=_max_memory(os.environ.get("TARGET_MAX_GPU_GIB")),
+        draft_max_memory=_max_memory(os.environ.get("DRAFT_MAX_GPU_GIB")),
+    )
     msgs = [{"role": "user", "content": PROMPT}]
     try:
         ids = m.tokenizer.apply_chat_template(
