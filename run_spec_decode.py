@@ -14,6 +14,10 @@ Env vars (mirrors scmp_llm_llama/check_gen.py where they overlap):
     SC_PREC        — SC precision (default 8)
     STOC_LENS      — comma-separated sweep (default 256,128,64,32)
     SC_ATTN_GRANULARITY — per_head | per_row (default per_head)
+    SC_HALVE       — "1"/"0" uSystolic cycle-halving (default 1)
+    SC_HALVE_GRID_ONLY — "1" to halve only the rng grid and keep each STOC_LENS
+                   value as the stream length, so the sweep stays meaningful
+                   with halve on (default 0 = pure halve collapses to 2^(prec-1))
     SEED           — RNG seed for reproducibility (default 0)
 """
 import os
@@ -33,6 +37,8 @@ TEMPERATURE = float(os.environ.get("TEMPERATURE", "1.0"))
 SC_PREC = int(os.environ.get("SC_PREC", "8"))
 STOC_LENS = [int(x) for x in os.environ.get("STOC_LENS", "256,128,64,32").split(",")]
 SC_ATTN_GRANULARITY = os.environ.get("SC_ATTN_GRANULARITY", "per_row")
+SC_HALVE = os.environ.get("SC_HALVE", "1") == "1"
+SC_HALVE_GRID_ONLY = os.environ.get("SC_HALVE_GRID_ONLY", "0") == "1"
 SEED = int(os.environ.get("SEED", "0"))
 
 
@@ -42,10 +48,25 @@ def _set_sc(model, *, enabled, stoc_len):
     model.config.sc_prec = SC_PREC
     model.config.sc_stoc_len = stoc_len
     model.config.sc_granularity = SC_ATTN_GRANULARITY
+    model.config.sc_halve_bipolar = SC_HALVE
+    model.config.sc_halve_grid_only = SC_HALVE_GRID_ONLY
+
+
+def _max_memory(gpu_gib: str | None):
+    # Single-GPU headroom control: cap on-device memory so the SC kernels have
+    # scratch room (rest offloads to CPU). None -> plain auto-dispatch.
+    if not gpu_gib:
+        return None
+    cpu_gib = os.environ.get("OFFLOAD_CPU_GIB", "400")
+    return {0: f"{gpu_gib}GiB", "cpu": f"{cpu_gib}GiB"}
 
 
 def main() -> None:
-    m = load_spec_models(TARGET_MODEL, DRAFT_MODEL, dtype=torch.float16)
+    m = load_spec_models(
+        TARGET_MODEL, DRAFT_MODEL, dtype=torch.float16,
+        target_max_memory=_max_memory(os.environ.get("TARGET_MAX_GPU_GIB")),
+        draft_max_memory=_max_memory(os.environ.get("DRAFT_MAX_GPU_GIB")),
+    )
     msgs = [{"role": "user", "content": PROMPT}]
     try:
         ids = m.tokenizer.apply_chat_template(

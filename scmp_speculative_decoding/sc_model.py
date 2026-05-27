@@ -61,6 +61,10 @@ SC_CONFIG_DEFAULTS = {
                                          # cycles); the rescale path it triggers
                                          # is scrambled by default (SC_SCRAMBLE_
                                          # RESCALE=1), keeping quality (x1.056).
+    "sc_halve_grid_only": False,         # when halving, halve only the rng grid
+                                         # and keep sc_stoc_len as the stream
+                                         # length (sweepable halve). Off => pure
+                                         # halve (cycles+grid both 2^(sc_prec-1)).
 }
 
 
@@ -99,9 +103,12 @@ class SCLinear(nn.Linear):
         sc_stoc_len = int(getattr(config, "sc_stoc_len", 256))
         sc_chunk_d = int(getattr(config, "sc_linear_chunk_d", 128))
         sc_halve = bool(getattr(config, "sc_halve_bipolar", False))
-        # Under halve, hand stoc_len=None so the kernel sets the cycle count and
-        # rng grid to 2^(sc_prec-1); passing 256 would defeat the halving.
-        eff_stoc_len = None if sc_halve else sc_stoc_len
+        sc_halve_grid_only = bool(getattr(config, "sc_halve_grid_only", False))
+        # Pure halve: hand stoc_len=None so the kernel sets cycle count and rng
+        # grid to 2^(sc_prec-1); passing 256 would defeat the halving.
+        # Grid-only (sweepable) halve: keep the explicit stoc_len as the stream
+        # length and halve only the rng grid, so a stoc_len sweep stays meaningful.
+        eff_stoc_len = sc_stoc_len if (sc_halve_grid_only or not sc_halve) else None
 
         orig_dtype = x.dtype
         orig_shape = x.shape
@@ -147,7 +154,22 @@ def replace_linears_with_sc(
                 new_lin.weight = child.weight
                 if child.bias is not None:
                     new_lin.bias = child.bias
-                new_lin.to(child.weight.device, dtype=child.weight.dtype)
+                # Preserve accelerate's dispatch/offload hook. Under
+                # device_map="auto" + CPU offload the original Linear carries an
+                # AlignDevicesHook whose weights_map holds the real CPU weights
+                # while the module param is a `meta` placeholder. Dropping the
+                # hook leaves the SCLinear with a meta weight that is never
+                # materialized at forward -> "Tensor on device meta" crash.
+                hf_hook = getattr(child, "_hf_hook", None)
+                if hf_hook is not None:
+                    from accelerate.hooks import (
+                        add_hook_to_module,
+                        remove_hook_from_module,
+                    )
+                    remove_hook_from_module(child)
+                    add_hook_to_module(new_lin, hf_hook)
+                else:
+                    new_lin.to(child.weight.device, dtype=child.weight.dtype)
                 setattr(parent, name, new_lin)
                 n_replaced += 1
             else:
@@ -229,7 +251,10 @@ def sc_eager_attention_forward(
     sc_prec = int(getattr(config, "sc_prec", 8))
     sc_stoc_len = int(getattr(config, "sc_stoc_len", 256))
     sc_halve = bool(getattr(config, "sc_halve_bipolar", False))
-    eff_stoc_len = None if sc_halve else sc_stoc_len
+    sc_halve_grid_only = bool(getattr(config, "sc_halve_grid_only", False))
+    # Pure halve -> stoc_len=None (cycles+grid at 2^(sc_prec-1)); grid-only halve
+    # keeps the explicit stoc_len and halves just the rng grid (sweepable).
+    eff_stoc_len = sc_stoc_len if (sc_halve_grid_only or not sc_halve) else None
 
     if use_sc:
         attn_weights = _sc_attention_matmul_ab_t(
@@ -338,7 +363,14 @@ def make_sc_model(
         sc_head.weight = head.weight
         if head.bias is not None:
             sc_head.bias = head.bias
-        sc_head.to(head.weight.device, dtype=head.weight.dtype)
+        # Preserve accelerate's offload hook (see replace_linears_with_sc).
+        hf_hook = getattr(head, "_hf_hook", None)
+        if hf_hook is not None:
+            from accelerate.hooks import add_hook_to_module, remove_hook_from_module
+            remove_hook_from_module(head)
+            add_hook_to_module(sc_head, hf_hook)
+        else:
+            sc_head.to(head.weight.device, dtype=head.weight.dtype)
         model.lm_head = sc_head
         n += 1
 
